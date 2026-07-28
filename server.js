@@ -17,21 +17,29 @@ let indiceReproduzindo = 0;
 let isPlaying = false;
 let timestampInicioEpoch = 0; 
 let milissegundosAcumuladosAntesDoPause = 0; 
+let duracaoAtualMs = 0; // NOVO: Armazena a duração do vídeo para a barra do celular funcionar
 
 // MAPA DE DISPOSITIVOS REAIS
 const dispositivosUnicosMap = new Map();
 
 function calcularTempoAtualMs() {
     if (!isPlaying || filaMidias.length === 0) return milissegundosAcumuladosAntesDoPause;
-    return milissegundosAcumuladosAntesDoPause + (Date.now() - timestampInicioEpoch);
+    let tempoCalculado = milissegundosAcumuladosAntesDoPause + (Date.now() - timestampInicioEpoch);
+    // Trava para não ultrapassar a duração do vídeo, se ela for conhecida
+    if (duracaoAtualMs > 0 && tempoCalculado > duracaoAtualMs) {
+        return duracaoAtualMs;
+    }
+    return tempoCalculado;
 }
 
-// SINCRONIZAÇÃO DA MÍDIA
+// SINCRONIZAÇÃO DA MÍDIA (A cada 1 segundo avisa o Android)
 setInterval(() => {
     if (isPlaying && filaMidias.length > 0) {
         broadcastParaTodos({
+            tipo: "SYNC_TEMPO", // O Android agora usa essa chave para ler a mensagem
             comando: "SYNC_TEMPO", 
             posicaoMs: calcularTempoAtualMs(),
+            duracaoMs: duracaoAtualMs > 0 ? duracaoAtualMs : 120000, // Envia 2 min por padrão se a TV não avisar a duração real
             timestampServidor: Date.now(), 
             reproduzindo: isPlaying
         });
@@ -82,9 +90,20 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            const tipo = data.tipo || data.acao;
+            // CORREÇÃO: Padronizando variáveis para não bloquear comandos do celular
+            const tipo = (data.tipo || data.acao || "").toLowerCase();
             const url = data.url;
-            const slink = data.slink || data.comando;
+            const slink = (data.slink || data.comando || "").toLowerCase();
+
+            // ROTA EXCLUSIVA PARA A TV AVISAR O SERVIDOR DO TEMPO REAL
+            if (tipo === 'status_player' || tipo === 'sync_tv') {
+                if (data.duracaoMs) duracaoAtualMs = parseInt(data.duracaoMs, 10);
+                if (data.posicaoMs !== undefined) {
+                    milissegundosAcumuladosAntesDoPause = parseInt(data.posicaoMs, 10);
+                    timestampInicioEpoch = Date.now();
+                }
+                return; // Atualiza o servidor sem gerar loop de broadcast
+            }
 
             if (tipo === 'midia' || tipo === 'adicionar_midia' || url) {
                 if (url) {
@@ -94,6 +113,7 @@ wss.on('connection', (ws) => {
                     if (estavaVazio) {
                         indiceReproduzindo = 0; 
                         milissegundosAcumuladosAntesDoPause = 0; 
+                        duracaoAtualMs = data.duracaoMs || 0; // Pega a duração inicial se enviada
                         timestampInicioEpoch = Date.now(); 
                         isPlaying = true;
                     }
@@ -104,6 +124,7 @@ wss.on('connection', (ws) => {
                 if (filaMidias.length > 0) {
                     filaMidias.shift(); // Consome/apaga o vídeo antigo
                     milissegundosAcumuladosAntesDoPause = 0; 
+                    duracaoAtualMs = 0;
                     timestampInicioEpoch = Date.now(); 
 
                     if (filaMidias.length > 0) {
@@ -115,31 +136,34 @@ wss.on('connection', (ws) => {
                     broadcastEstadoTotal();
                 }
             } 
-            else if (slink || tipo === 'comando') {
-                const cmd = slink || tipo;
+            else {
+                // CORREÇÃO DA FALHA DO SEEK: Garante que "cmd" pegue o "tipo" caso "slink" não exista
+                const cmd = slink || tipo; 
+
                 if (cmd === 'clear' || cmd === 'limpar') { 
                     filaMidias = []; 
                     indiceReproduzindo = 0; 
                     milissegundosAcumuladosAntesDoPause = 0; 
+                    duracaoAtualMs = 0;
                     isPlaying = false; 
                 }
                 else if (cmd === 'next') { 
                     if (filaMidias.length > 0) {
                         filaMidias.shift();
                         milissegundosAcumuladosAntesDoPause = 0; 
+                        duracaoAtualMs = 0;
                         timestampInicioEpoch = Date.now();
                         isPlaying = filaMidias.length > 0;
                     } 
                 }
-                // AVANÇAR 15 SEGUNDOS REMOTAMENTE
                 else if (cmd === 'forward' || cmd === 'avancar_15' || cmd === 'forward_15') {
                     if (isPlaying && filaMidias.length > 0) {
                         let tempoAtual = calcularTempoAtualMs() + 15000;
+                        if (duracaoAtualMs > 0 && tempoAtual > duracaoAtualMs) tempoAtual = duracaoAtualMs;
                         milissegundosAcumuladosAntesDoPause = tempoAtual;
                         timestampInicioEpoch = Date.now();
                     }
                 }
-                // VOLTAR 15 SEGUNDOS REMOTAMENTE
                 else if (cmd === 'rewind' || cmd === 'voltar_15' || cmd === 'rewind_15') {
                     if (isPlaying && filaMidias.length > 0) {
                         let tempoAtual = Math.max(0, calcularTempoAtualMs() - 15000);
@@ -147,13 +171,16 @@ wss.on('connection', (ws) => {
                         timestampInicioEpoch = Date.now();
                     }
                 }
-                // --- TRATAMENTO DE SEEK (ARRASTAR A BARRA DE PROGRESSO) ---
+                // --- TRATAMENTO DE SEEK FUNCIONANDO ---
                 else if (cmd === 'seek' || data.posicaoMs !== undefined) {
                     let novaPosicao = data.posicaoMs !== undefined ? data.posicaoMs : data.posicao;
                     if (typeof novaPosicao === 'string') novaPosicao = parseInt(novaPosicao, 10);
 
                     if (!isNaN(novaPosicao) && filaMidias.length > 0) {
                         milissegundosAcumuladosAntesDoPause = Math.max(0, novaPosicao);
+                        if (duracaoAtualMs > 0 && milissegundosAcumuladosAntesDoPause > duracaoAtualMs) {
+                            milissegundosAcumuladosAntesDoPause = duracaoAtualMs;
+                        }
                         timestampInicioEpoch = Date.now();
                     }
                 }
@@ -169,9 +196,14 @@ wss.on('connection', (ws) => {
                         isPlaying = true; 
                     } 
                 }
-                broadcastEstadoTotal();
+                
+                // Transmite para todos (TV e Celular) se o comando foi de controle
+                const comandosValidos = ['clear','limpar','next','forward','avancar_15','forward_15','rewind','voltar_15','rewind_15','seek','pause','play'];
+                if (comandosValidos.includes(cmd) || data.posicaoMs !== undefined) {
+                    broadcastEstadoTotal();
+                }
             }
-        } catch (e) { }
+        } catch (e) { console.error("Erro ao processar mensagem JSON:", e.message); }
     });
 
     ws.on('close', () => {
@@ -186,12 +218,14 @@ function enviarEstadoInicial(ws) {
     if (ws.readyState === WebSocket.OPEN) {
         const emStandby = filaMidias.length === 0;
         ws.send(JSON.stringify({
+            tipo: "ESTADO_TOTAL", // Android lê isso
             comando: "ESTADO_TOTAL", 
             fila: filaMidias, 
             indice: indiceReproduzindo,
             modoStandby: emStandby,
             midiaAtual: emStandby ? null : filaMidias[0],
             posicaoMs: calcularTempoAtualMs(), 
+            duracaoMs: duracaoAtualMs > 0 ? duracaoAtualMs : 120000, 
             timestampServidor: Date.now(),
             reproduzindo: isPlaying, 
             totalDispositivos: dispositivosUnicosMap.size
