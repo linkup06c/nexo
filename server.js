@@ -147,6 +147,16 @@ wss.on('connection', (ws) => {
                         timestampInicioEpoch = Date.now();
                     }
                 }
+                // --- TRATAMENTO DE SEEK (ARRASTAR A BARRA DE PROGRESSO) ---
+                else if (cmd === 'seek' || data.posicaoMs !== undefined) {
+                    let novaPosicao = data.posicaoMs !== undefined ? data.posicaoMs : data.posicao;
+                    if (typeof novaPosicao === 'string') novaPosicao = parseInt(novaPosicao, 10);
+
+                    if (!isNaN(novaPosicao) && filaMidias.length > 0) {
+                        milissegundosAcumuladosAntesDoPause = Math.max(0, novaPosicao);
+                        timestampInicioEpoch = Date.now();
+                    }
+                }
                 else if (cmd === 'pause') { 
                     if (isPlaying) { 
                         milissegundosAcumuladosAntesDoPause = calcularTempoAtualMs(); 
