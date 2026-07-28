@@ -19,28 +19,26 @@ let timestampInicioEpoch = 0;
 let milissegundosAcumuladosAntesDoPause = 0; 
 let duracaoAtualMs = 0; 
 
-// MAPA DE DISPOSITIVOS REAIS
 const dispositivosUnicosMap = new Map();
 
 function calcularTempoAtualMs() {
     if (!isPlaying || filaMidias.length === 0) return milissegundosAcumuladosAntesDoPause;
     let tempoCalculado = milissegundosAcumuladosAntesDoPause + (Date.now() - timestampInicioEpoch);
     
-    // Se temos a duração real e o tempo passou dela, mantém travado no final ou avisa
     if (duracaoAtualMs > 0 && tempoCalculado > duracaoAtualMs) {
         return duracaoAtualMs;
     }
     return tempoCalculado;
 }
 
-// SINCRONIZAÇÃO DA MÍDIA (A cada 1 segundo avisa o Android e os Controles)
+// SINCRONIZAÇÃO DA MÍDIA (A cada 1 segundo avisa o Android, TV e os Controles)
 setInterval(() => {
     if (isPlaying && filaMidias.length > 0) {
         broadcastParaTodos({
             tipo: "SYNC_TEMPO",
             comando: "SYNC_TEMPO", 
             posicaoMs: calcularTempoAtualMs(),
-            duracaoMs: duracaoAtualMs, // Envia exatamente a duração real do player
+            duracaoMs: duracaoAtualMs,
             timestampServidor: Date.now(), 
             reproduzindo: isPlaying
         });
@@ -95,7 +93,6 @@ wss.on('connection', (ws) => {
             const url = data.url;
             const slink = (data.slink || data.comando || "").toLowerCase();
 
-            // ROTA ONDE A TV MANDA O TEMPO E A DURAÇÃO REAL DO EXOPLAYER
             if (tipo === 'status_player' || tipo === 'sync_tv') {
                 if (data.duracaoMs) {
                     const novaDuracao = parseInt(data.duracaoMs, 10);
@@ -129,7 +126,7 @@ wss.on('connection', (ws) => {
                 if (filaMidias.length > 0) {
                     filaMidias.shift(); 
                     milissegundosAcumuladosAntesDoPause = 0; 
-                    duracaoAtualMs = 0; // Reseta para o próximo vídeo carregar a nova duração do player
+                    duracaoAtualMs = 0; 
                     timestampInicioEpoch = Date.now(); 
 
                     if (filaMidias.length > 0) {
