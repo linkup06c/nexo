@@ -17,7 +17,7 @@ let indiceReproduzindo = 0;
 let isPlaying = false;
 let timestampInicioEpoch = 0; 
 let milissegundosAcumuladosAntesDoPause = 0; 
-let duracaoAtualMs = 0; // NOVO: Armazena a duração do vídeo para a barra do celular funcionar
+let duracaoAtualMs = 0; 
 
 // MAPA DE DISPOSITIVOS REAIS
 const dispositivosUnicosMap = new Map();
@@ -25,21 +25,22 @@ const dispositivosUnicosMap = new Map();
 function calcularTempoAtualMs() {
     if (!isPlaying || filaMidias.length === 0) return milissegundosAcumuladosAntesDoPause;
     let tempoCalculado = milissegundosAcumuladosAntesDoPause + (Date.now() - timestampInicioEpoch);
-    // Trava para não ultrapassar a duração do vídeo, se ela for conhecida
+    
+    // Se temos a duração real e o tempo passou dela, mantém travado no final ou avisa
     if (duracaoAtualMs > 0 && tempoCalculado > duracaoAtualMs) {
         return duracaoAtualMs;
     }
     return tempoCalculado;
 }
 
-// SINCRONIZAÇÃO DA MÍDIA (A cada 1 segundo avisa o Android)
+// SINCRONIZAÇÃO DA MÍDIA (A cada 1 segundo avisa o Android e os Controles)
 setInterval(() => {
     if (isPlaying && filaMidias.length > 0) {
         broadcastParaTodos({
-            tipo: "SYNC_TEMPO", // O Android agora usa essa chave para ler a mensagem
+            tipo: "SYNC_TEMPO",
             comando: "SYNC_TEMPO", 
             posicaoMs: calcularTempoAtualMs(),
-            duracaoMs: duracaoAtualMs > 0 ? duracaoAtualMs : 120000, // Envia 2 min por padrão se a TV não avisar a duração real
+            duracaoMs: duracaoAtualMs, // Envia exatamente a duração real do player
             timestampServidor: Date.now(), 
             reproduzindo: isPlaying
         });
@@ -90,19 +91,23 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            // CORREÇÃO: Padronizando variáveis para não bloquear comandos do celular
             const tipo = (data.tipo || data.acao || "").toLowerCase();
             const url = data.url;
             const slink = (data.slink || data.comando || "").toLowerCase();
 
-            // ROTA EXCLUSIVA PARA A TV AVISAR O SERVIDOR DO TEMPO REAL
+            // ROTA ONDE A TV MANDA O TEMPO E A DURAÇÃO REAL DO EXOPLAYER
             if (tipo === 'status_player' || tipo === 'sync_tv') {
-                if (data.duracaoMs) duracaoAtualMs = parseInt(data.duracaoMs, 10);
+                if (data.duracaoMs) {
+                    const novaDuracao = parseInt(data.duracaoMs, 10);
+                    if (!isNaN(novaDuracao) && novaDuracao > 0) {
+                        duracaoAtualMs = novaDuracao;
+                    }
+                }
                 if (data.posicaoMs !== undefined) {
                     milissegundosAcumuladosAntesDoPause = parseInt(data.posicaoMs, 10);
                     timestampInicioEpoch = Date.now();
                 }
-                return; // Atualiza o servidor sem gerar loop de broadcast
+                return; 
             }
 
             if (tipo === 'midia' || tipo === 'adicionar_midia' || url) {
@@ -113,7 +118,7 @@ wss.on('connection', (ws) => {
                     if (estavaVazio) {
                         indiceReproduzindo = 0; 
                         milissegundosAcumuladosAntesDoPause = 0; 
-                        duracaoAtualMs = data.duracaoMs || 0; // Pega a duração inicial se enviada
+                        duracaoAtualMs = data.duracaoMs || 0; 
                         timestampInicioEpoch = Date.now(); 
                         isPlaying = true;
                     }
@@ -122,22 +127,21 @@ wss.on('connection', (ws) => {
             } 
             else if (tipo === 'proximo_video') {
                 if (filaMidias.length > 0) {
-                    filaMidias.shift(); // Consome/apaga o vídeo antigo
+                    filaMidias.shift(); 
                     milissegundosAcumuladosAntesDoPause = 0; 
-                    duracaoAtualMs = 0;
+                    duracaoAtualMs = 0; // Reseta para o próximo vídeo carregar a nova duração do player
                     timestampInicioEpoch = Date.now(); 
 
                     if (filaMidias.length > 0) {
                         indiceReproduzindo = 0;
                         isPlaying = true;
                     } else {
-                        isPlaying = false; // Entra em Standby
+                        isPlaying = false; 
                     }
                     broadcastEstadoTotal();
                 }
             } 
             else {
-                // CORREÇÃO DA FALHA DO SEEK: Garante que "cmd" pegue o "tipo" caso "slink" não exista
                 const cmd = slink || tipo; 
 
                 if (cmd === 'clear' || cmd === 'limpar') { 
@@ -171,7 +175,6 @@ wss.on('connection', (ws) => {
                         timestampInicioEpoch = Date.now();
                     }
                 }
-                // --- TRATAMENTO DE SEEK FUNCIONANDO ---
                 else if (cmd === 'seek' || data.posicaoMs !== undefined) {
                     let novaPosicao = data.posicaoMs !== undefined ? data.posicaoMs : data.posicao;
                     if (typeof novaPosicao === 'string') novaPosicao = parseInt(novaPosicao, 10);
@@ -197,7 +200,6 @@ wss.on('connection', (ws) => {
                     } 
                 }
                 
-                // Transmite para todos (TV e Celular) se o comando foi de controle
                 const comandosValidos = ['clear','limpar','next','forward','avancar_15','forward_15','rewind','voltar_15','rewind_15','seek','pause','play'];
                 if (comandosValidos.includes(cmd) || data.posicaoMs !== undefined) {
                     broadcastEstadoTotal();
@@ -218,14 +220,14 @@ function enviarEstadoInicial(ws) {
     if (ws.readyState === WebSocket.OPEN) {
         const emStandby = filaMidias.length === 0;
         ws.send(JSON.stringify({
-            tipo: "ESTADO_TOTAL", // Android lê isso
+            tipo: "ESTADO_TOTAL", 
             comando: "ESTADO_TOTAL", 
             fila: filaMidias, 
             indice: indiceReproduzindo,
             modoStandby: emStandby,
             midiaAtual: emStandby ? null : filaMidias[0],
             posicaoMs: calcularTempoAtualMs(), 
-            duracaoMs: duracaoAtualMs > 0 ? duracaoAtualMs : 120000, 
+            duracaoMs: duracaoAtualMs, 
             timestampServidor: Date.now(),
             reproduzindo: isPlaying, 
             totalDispositivos: dispositivosUnicosMap.size
